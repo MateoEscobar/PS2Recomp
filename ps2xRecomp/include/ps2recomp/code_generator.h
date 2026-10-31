@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include "ps2recomp/control_flow_analyzer.h"
+#include "ps2recomp/types.h"
 
 namespace ps2recomp
 {
@@ -16,7 +17,6 @@ namespace ps2recomp
 	struct Instruction;
     struct MemoryAccessHint;
 	struct Function;
-	struct Symbol;
 	struct Section;
     class RecompilerReporter;
 
