@@ -198,6 +198,9 @@ namespace ps2x::iop::detail
             interruptEventFlagId = 0;
             virtualIsoBuilt = false;
             virtualIsoValid = false;
+            imageTreeBuilt = false;
+            imageTreeValid = false;
+            imageNodes.clear();
             completionCallback.reset();
             nodes.clear();
             metadataSectors.clear();
@@ -594,12 +597,186 @@ namespace ps2x::iop::detail
             return &nodes[current];
         }
 
+        // --- Real disc image (HostPathKind::CdImage) -------------------------------------
+        // sceCdSearchFile must resolve against the mounted image when there is one: that is
+        // where sceCdRead reads from, and the extracted CD root used by the virtual ISO is
+        // usually a subset (or absent). The directory tree is parsed once, lazily.
+        struct ImageNode
+        {
+            std::string identifier; // as recorded on the disc, e.g. "BFW.SND;1"
+            bool directory = false;
+            uint32_t lsn = 0u;
+            uint32_t size = 0u;
+            std::vector<size_t> children;
+        };
+
+        bool ensureImageHandle()
+        {
+            if (imageHandle != 0u)
+                return true;
+            const std::string imagePath = host.hostPath(HostPathKind::CdImage);
+            if (imagePath.empty())
+                return false;
+            imageHandle = host.openHostFile(imagePath);
+            return imageHandle != 0u;
+        }
+
+        bool readImageSector(uint32_t lsn, std::array<uint8_t, kSectorSize> &sector)
+        {
+            size_t bytesRead = 0u;
+            return host.readHostFile(imageHandle,
+                                     static_cast<uint64_t>(lsn) * kSectorSize,
+                                     sector.data(),
+                                     sector.size(),
+                                     bytesRead) &&
+                   bytesRead == sector.size();
+        }
+
+        static uint32_t readLe32(const uint8_t *source)
+        {
+            uint32_t value = 0u;
+            std::memcpy(&value, source, sizeof(value));
+            return value;
+        }
+
+        bool addImageDirectory(size_t parent, uint32_t lsn, uint32_t size, uint32_t depth)
+        {
+            constexpr uint32_t kMaxDepth = 16u;
+            constexpr size_t kMaxNodes = 65536u;
+            if (depth > kMaxDepth)
+                return false;
+            std::array<uint8_t, kSectorSize> sector{};
+            uint32_t remaining = size;
+            uint32_t current = lsn;
+            while (remaining > 0u)
+            {
+                if (!readImageSector(current, sector))
+                    return false;
+                size_t offset = 0u;
+                while (offset < kSectorSize)
+                {
+                    const uint8_t length = sector[offset];
+                    if (length == 0u)
+                        break; // rest of the sector is padding
+                    if (length < 33u || offset + length > kSectorSize)
+                        return false;
+                    const uint8_t *record = sector.data() + offset;
+                    const uint8_t nameLength = record[32];
+                    if (33u + nameLength > length)
+                        return false;
+                    const std::string_view name(reinterpret_cast<const char *>(record + 33u), nameLength);
+                    offset += length;
+                    if (nameLength == 1u && (name[0] == '\0' || name[0] == '\1'))
+                        continue; // self / parent
+                    if (imageNodes.size() >= kMaxNodes)
+                        return false;
+                    ImageNode node;
+                    node.identifier.assign(name);
+                    node.directory = (record[25] & 2u) != 0u;
+                    node.lsn = readLe32(record + 2u);
+                    node.size = readLe32(record + 10u);
+                    const size_t index = imageNodes.size();
+                    imageNodes.push_back(std::move(node));
+                    imageNodes[parent].children.push_back(index);
+                    if (imageNodes[index].directory &&
+                        !addImageDirectory(index, imageNodes[index].lsn, imageNodes[index].size, depth + 1u))
+                        return false;
+                }
+                if (remaining >= kSectorSize)
+                {
+                    remaining -= kSectorSize;
+                    ++current;
+                }
+                else
+                {
+                    remaining = 0u;
+                }
+            }
+            return true;
+        }
+
+        bool buildImageTree()
+        {
+            if (imageTreeBuilt)
+                return imageTreeValid;
+            imageTreeBuilt = true;
+            if (!ensureImageHandle())
+                return false;
+
+            std::array<uint8_t, kSectorSize> primary{};
+            if (!readImageSector(kPrimaryVolumeDescriptorLsn, primary) || primary[0] != 1u ||
+                std::memcmp(primary.data() + 1u, "CD001", 5u) != 0)
+                return false;
+
+            imageNodes.clear();
+            ImageNode root;
+            root.directory = true;
+            root.lsn = readLe32(primary.data() + 156u + 2u);
+            root.size = readLe32(primary.data() + 156u + 10u);
+            imageNodes.push_back(std::move(root));
+            if (!addImageDirectory(0u, imageNodes[0].lsn, imageNodes[0].size, 0u))
+            {
+                imageNodes.clear();
+                return false;
+            }
+            imageTreeValid = true;
+            return true;
+        }
+
+        ImageNode *findImageNode(std::string_view guestPath)
+        {
+            if (!buildImageTree())
+                return nullptr;
+
+            const ParsedPs2Path parsed = parsePs2Path(guestPath);
+            if (!parsed || parsed.device != Ps2PathDevice::Cdrom)
+                return nullptr;
+
+            size_t current = 0u;
+            size_t begin = 0u;
+            while (begin <= parsed.path.size())
+            {
+                const size_t end = parsed.path.find('/', begin);
+                const size_t length = (end == std::string::npos) ? parsed.path.size() - begin : end - begin;
+                const std::string_view component(parsed.path.data() + begin, length);
+                begin = (end == std::string::npos) ? parsed.path.size() + 1u : end + 1u;
+
+                if (component.empty() || component == ".")
+                    continue;
+                if (component == "..")
+                    return nullptr;
+
+                const std::string wanted = normalizedIsoComponent(component);
+                const auto child = std::find_if(imageNodes[current].children.begin(), imageNodes[current].children.end(),
+                                                [&](size_t childIndex)
+                                                {
+                                                    return normalizedIsoComponent(imageNodes[childIndex].identifier) == wanted;
+                                                });
+                if (child == imageNodes[current].children.end())
+                    return nullptr;
+                current = *child;
+            }
+            return &imageNodes[current];
+        }
+
         bool searchFile(uint32_t resultAddress, uint32_t nameAddress)
         {
             if (resultAddress == 0u || nameAddress == 0u)
                 return false;
 
             const std::string guestPath = memory.readString(nameAddress, 1024u);
+
+            if (const ImageNode *imageNode = findImageNode(guestPath))
+            {
+                std::array<uint8_t, 32u> result{};
+                writeLe32(result.data(), imageNode->lsn);
+                writeLe32(result.data() + 4u, imageNode->size);
+                const std::string leaf = normalizedIsoComponent(imageNode->identifier);
+                std::memcpy(result.data() + 8u, leaf.data(), std::min<size_t>(16u, leaf.size()));
+                result[24u] = imageNode->directory ? 2u : 0u;
+                return memory.writeRam(resultAddress, result.data(), result.size());
+            }
+
             IsoNode *node = findVirtualIsoNode(guestPath);
             if (!node)
                 return false;
@@ -722,6 +899,9 @@ namespace ps2x::iop::detail
         uint64_t imageHandle = 0u;
         bool virtualIsoBuilt = false;
         bool virtualIsoValid = false;
+        bool imageTreeBuilt = false;
+        bool imageTreeValid = false;
+        std::vector<ImageNode> imageNodes;
         uint32_t volumeSectors = 0u;
         std::vector<IsoNode> nodes;
         std::unordered_map<uint32_t, std::array<uint8_t, kSectorSize>> metadataSectors;

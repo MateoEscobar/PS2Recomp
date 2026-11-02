@@ -47,13 +47,14 @@ namespace ps2x::iop::detail
 
         void reset();
         [[nodiscard]] bool dispatchSifManImport(uint16_t ordinal, IopCpuState &cpu);
-        [[nodiscard]] bool dispatchSifCmdImport(uint16_t ordinal, IopCpuState &cpu);
+        [[nodiscard]] bool dispatchSifCmdImport(uint16_t ordinal, IopCpuState &cpu, IopGuestExecutor &executor);
         [[nodiscard]] RpcResult handleRpc(const RpcRequest &request, IopGuestExecutor &executor);
         void onSifTransfer(const SifTransfer &transfer);
         void removeServersInRange(uint32_t base, uint32_t size);
 
         [[nodiscard]] bool hasServer(uint32_t sid) const noexcept;
         [[nodiscard]] size_t serverCount() const noexcept { return m_servers.size(); }
+        [[nodiscard]] size_t eeClientCount() const noexcept { return m_eeClients.size(); }
 
     private:
         struct RpcServer
@@ -68,10 +69,20 @@ namespace ps2x::iop::detail
             uint32_t queue = 0;
         };
 
+        // An IOP-side client (SifRpcClientData_t in IOP RAM) bound to an EE server through the host.
+        struct EeRpcClient
+        {
+            uint32_t clientData = 0;
+            uint32_t sid = 0;
+            uint32_t serverHandle = 0;
+        };
+
         IopHost &m_host;
         IopMemory &m_memory;
         IopKernel &m_kernel;
         std::unordered_map<uint32_t, RpcServer> m_servers;
+        std::unordered_map<uint32_t, EeRpcClient> m_eeClients;
+        uint32_t m_nextEeServerHandle = 1u;
         uint32_t m_nextDmaId = 1u;
         bool m_sifInitialized = false;
     };

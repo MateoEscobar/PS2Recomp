@@ -118,6 +118,36 @@ namespace ps2x::iop
                                          uint32_t a3,
                                          uint32_t *resultAddress) = 0;
 
+        // IOP -> EE RPC (sifcmd sceSifBindRpc / sceSifCallRpc issued by an IRX). The EE side
+        // registers servers with sceSifRegisterRpc; a host that emulates that registry answers
+        // hasGuestRpcServer and services callGuestRpc synchronously: `send` holds the IOP's send
+        // buffer, the reply is written to `receive` (receiveSize bytes) and `result` gets the
+        // server function's return value. The defaults keep hosts without an EE RPC registry
+        // source-compatible: the IRX sees an unbound client (cd->server == 0).
+        virtual bool hasGuestRpcServer(uint32_t sid) const
+        {
+            (void)sid;
+            return false;
+        }
+        virtual bool callGuestRpc(uint32_t sid,
+                                  uint32_t function,
+                                  const void *send,
+                                  uint32_t sendSize,
+                                  void *receive,
+                                  uint32_t receiveSize,
+                                  uint32_t *result)
+        {
+            (void)sid;
+            (void)function;
+            (void)send;
+            (void)sendSize;
+            (void)receive;
+            (void)receiveSize;
+            if (result)
+                *result = 0u;
+            return false;
+        }
+
         // Deliver an IOP -> EE SIF command packet. The default keeps hosts
         // which do not emulate the EE command dispatcher source-compatible.
         virtual bool sendSifCommand(uint32_t commandId,

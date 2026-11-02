@@ -22,8 +22,13 @@ namespace ps2x::iop::detail
         static constexpr uint32_t Spu2End = 0x1FA00000u;
         static constexpr uint32_t SifBase = 0x1D000000u;
         static constexpr uint32_t SifEnd = 0x1D001000u;
-        static constexpr uint32_t HeapBase = 0x00120000u;
-        static constexpr uint32_t HeapLimit = 0x001F0000u;
+        // Modules are placed from kModuleLoadBase (0x10000) up to HeapBase; sysmem allocations
+        // (AllocSysMemory, thread stacks, the EE's sceSifAllocIopHeap) live in [HeapBase, HeapLimit).
+        // A real IOP has ~1.5 MB free once the kernel is resident: a driver such as Sony
+        // MultiStream allocates several 100 KB stream buffers, which the previous 832 KB arena
+        // (0x120000..0x1F0000) could not satisfy. The synchronous call stack sits at HeapLimit.
+        static constexpr uint32_t HeapBase = 0x00080000u;
+        static constexpr uint32_t HeapLimit = 0x001F8000u;
 
         struct Allocation
         {

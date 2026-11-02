@@ -21,6 +21,8 @@ namespace ps2x::iop::detail
     void IopRpcBridge::reset()
     {
         m_servers.clear();
+        m_eeClients.clear();
+        m_nextEeServerHandle = 1u;
         m_nextDmaId = 1u;
         m_sifInitialized = false;
     }
@@ -131,7 +133,7 @@ namespace ps2x::iop::detail
         }
     }
 
-    bool IopRpcBridge::dispatchSifCmdImport(uint16_t ordinal, IopCpuState &cpu)
+    bool IopRpcBridge::dispatchSifCmdImport(uint16_t ordinal, IopCpuState &cpu, IopGuestExecutor &executor)
     {
         const auto setV0 = [&](uint32_t value)
         {
@@ -148,10 +150,114 @@ namespace ps2x::iop::detail
         case 10:
         case 11:
         case 14: // InitRpc
-        case 15:
-        case 16:
             setV0(0);
             return true;
+        case 15: // sceSifBindRpc(cd, sid, mode) -- IOP client binding to an EE server
+        {
+            // SifRpcClientData_t: hdr{pkt_addr, rpc_id, sema_id, mode} at 0x00, command 0x10,
+            // buff 0x14, cbuff 0x18, end_function 0x1C, end_param 0x20, server 0x24.
+            constexpr uint32_t kClientDataSize = 0x28u;
+            const uint32_t clientData = cpu.gpr[4];
+            const uint32_t sid = cpu.gpr[5];
+            const uint32_t mode = cpu.gpr[6];
+            if (clientData == 0u || !m_memory.ownsRamRange(clientData, kClientDataSize))
+            {
+                setV0(0xFFFFFFFFu);
+                return true;
+            }
+
+            uint32_t serverHandle = 0u;
+            if (m_host.hasGuestRpcServer(sid))
+            {
+                // Non-zero opaque handle: the SDK's bind loop spins on cd->server != NULL.
+                serverHandle = 0x80000000u | (m_nextEeServerHandle++ & 0x7FFFFFFFu);
+                if (m_nextEeServerHandle == 0u)
+                    m_nextEeServerHandle = 1u;
+                m_eeClients[clientData] = EeRpcClient{clientData, sid, serverHandle};
+            }
+            else
+            {
+                m_eeClients.erase(clientData);
+            }
+
+            m_memory.write32(clientData + 0x00u, 0u);          // pkt_addr
+            m_memory.write32(clientData + 0x04u, 0u);          // rpc_id
+            m_memory.write32(clientData + 0x08u, 0xFFFFFFFFu); // sema_id
+            m_memory.write32(clientData + 0x0Cu, mode);        // mode
+            m_memory.write32(clientData + 0x10u, 0u);          // command
+            m_memory.write32(clientData + 0x14u, 0u);          // buff
+            m_memory.write32(clientData + 0x18u, 0u);          // cbuff
+            m_memory.write32(clientData + 0x1Cu, 0u);          // end_function
+            m_memory.write32(clientData + 0x20u, 0u);          // end_param
+            m_memory.write32(clientData + 0x24u, serverHandle);
+            setV0(0u);
+            return true;
+        }
+        case 16: // sceSifCallRpc(cd, fno, mode, send, ssize, recv, rsize, endfunc, efarg)
+        {
+            const uint32_t clientData = cpu.gpr[4];
+            const uint32_t function = cpu.gpr[5];
+            const uint32_t mode = cpu.gpr[6];
+            const uint32_t sendAddress = cpu.gpr[7];
+            const uint32_t stackPointer = cpu.gpr[29];
+            const uint32_t sendSize = m_memory.read32(stackPointer + 16u);
+            const uint32_t receiveAddress = m_memory.read32(stackPointer + 20u);
+            const uint32_t receiveSize = m_memory.read32(stackPointer + 24u);
+            const uint32_t endFunction = m_memory.read32(stackPointer + 28u);
+            const uint32_t endParameter = m_memory.read32(stackPointer + 32u);
+            (void)mode;
+
+            const auto client = m_eeClients.find(clientData);
+            if (client == m_eeClients.end())
+            {
+                setV0(0xFFFFFFFFu); // -E_SIF_RPC_CALL: unbound client
+                return true;
+            }
+
+            constexpr uint32_t kMaxRpcBytes = 64u * 1024u;
+            if (sendSize > kMaxRpcBytes || receiveSize > kMaxRpcBytes ||
+                (sendSize != 0u && (sendAddress == 0u || !m_memory.ownsRamRange(sendAddress, sendSize))) ||
+                (receiveSize != 0u && (receiveAddress == 0u || !m_memory.ownsRamRange(receiveAddress, receiveSize))))
+            {
+                setV0(0xFFFFFFFFu);
+                return true;
+            }
+
+            std::vector<uint8_t> send(sendSize, 0u);
+            std::vector<uint8_t> receive(receiveSize, 0u);
+            if (sendSize != 0u && !m_memory.readRam(sendAddress, send.data(), send.size()))
+            {
+                setV0(0xFFFFFFFFu);
+                return true;
+            }
+
+            uint32_t result = 0u;
+            const bool handled = m_host.callGuestRpc(client->second.sid,
+                                                     function,
+                                                     send.data(),
+                                                     sendSize,
+                                                     receive.data(),
+                                                     receiveSize,
+                                                     &result);
+            if (!handled)
+            {
+                setV0(0xFFFFFFFFu);
+                return true;
+            }
+
+            if (receiveSize != 0u)
+                (void)m_memory.writeRam(receiveAddress, receive.data(), receive.size());
+            m_memory.write32(clientData + 0x10u, function);     // command
+            m_memory.write32(clientData + 0x1Cu, endFunction);  // end_function
+            m_memory.write32(clientData + 0x20u, endParameter); // end_param
+
+            // The call completed synchronously; the end function (normally run from the SIF
+            // interrupt) runs as a guest callback with the caller's GP.
+            if (endFunction != 0u)
+                (void)executor.executeGuestFunction(endFunction, endParameter, 0u, 0u, 0u, cpu.gpr[28]);
+            setV0(0u);
+            return true;
+        }
         case 12: // sceSifSendCmd
         case 13: // isceSifSendCmd
         {
