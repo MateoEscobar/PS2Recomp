@@ -1101,6 +1101,24 @@ namespace
         return true;
     }
 
+    // A code-looking value that lands immediately after a control transfer names
+    // that transfer's delay slot, which belongs to the transfer's owner. Promoting
+    // it to a function start would cut the owner before the delay instruction.
+    bool IsDelaySlotOfControlTransfer(const std::vector<ps2recomp::Section> &sections, uint32_t address)
+    {
+        const ps2recomp::Section *section = FindCodeSectionByAddress(sections, address);
+        if (!section)
+        {
+            return false;
+        }
+
+        const uint32_t offset = address - section->address;
+        uint32_t predecessorRaw = 0;
+        return offset >= MIPS_INSTRUCTION_SIZE &&
+               ReadSectionWord(*section, offset - MIPS_INSTRUCTION_SIZE, predecessorRaw) &&
+               IsControlTransfer(predecessorRaw);
+    }
+
     bool TryLoadCodeAddressFromInitializedData(
         const std::vector<ps2recomp::Section> &sections,
         uint32_t raw,
@@ -1123,23 +1141,15 @@ namespace
             return false;
         }
 
-        const ps2recomp::Section *targetSection = FindCodeSectionByAddress(sections, target);
-        if (!targetSection)
+        if (!FindCodeSectionByAddress(sections, target))
         {
             return false;
         }
 
-        const uint32_t targetOffset = target - targetSection->address;
-        if (targetOffset >= MIPS_INSTRUCTION_SIZE)
+        // As happened at Silent Hill's 0x325350 (the delay slot of JALR 0x32534c).
+        if (IsDelaySlotOfControlTransfer(sections, target))
         {
-            uint32_t predecessorRaw = 0;
-            if (ReadSectionWord(*targetSection, targetOffset - MIPS_INSTRUCTION_SIZE, predecessorRaw) && IsControlTransfer(predecessorRaw))
-            {
-                // A loaded code-looking value that lands immediately after a
-                // control transfer names its delay slot. Promoting it would cut
-                // the real owner before the delay instruction, as happened at Silent Hill's 0x325350 (the delay slot of JALR 0x32534c).
-                return false;
-            }
+            return false;
         }
 
         outTarget = target;
@@ -1157,6 +1167,15 @@ namespace
                                        bool consumedByCurrentCall,
                                        std::unordered_set<uint32_t> &starts)
     {
+        // Same rule as initialized-data pointers. The Warriors passes the numeric
+        // constant 0x1EF000 (`lui a2,0x1E; ori a2,a2,0xF000`) to a call, and that
+        // value is the delay slot of the JAL at 0x1EEFFC: splitting there left the
+        // JAL return address 0x1EF004 without an entry (TWR-27).
+        if (IsDelaySlotOfControlTransfer(sections, target))
+        {
+            return false;
+        }
+
         const bool materializedAsCodePointer =
             consumedByCurrentCall ||
             IsConsumedAsCodePointerInControlFlow(section,

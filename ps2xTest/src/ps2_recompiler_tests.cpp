@@ -565,6 +565,23 @@ static bool writeMinimalMipsElfWithAddressTakenCallbacks(const std::filesystem::
     textWords[357] = 0x03E00008u; // jr ra
     textWords[358] = 0x27BD0010u; // addiu sp,sp,0x10 (delay slot)
 
+    // A LUI/ORI constant passed as a call argument can equal the address of a
+    // JAL delay slot (The Warriors: `lui a2,0x1E; jal; ori a2,a2,0xF000` and
+    // 0x1EF000 is the delay slot of the JAL at 0x1EEFFC). Splitting there drops
+    // the delay instruction from the real owner and leaves the JAL return
+    // address (0x1EF004) without an entry, so the materialized path must apply
+    // the same delay-slot rule as initialized-data pointers.
+    textWords[14] = 0x0C040168u;  // jal 0x001005A0
+    textWords[15] = 0x00000000u;  // nop (delay slot)
+    textWords[360] = 0x27BDFFF0u; // owner at 0x001005A0: addiu sp,sp,-0x10
+    textWords[361] = 0x3C060010u; // lui a2,0x10
+    textWords[362] = 0x0C040008u; // jal 0x00100020 (registrar-like call)
+    textWords[363] = 0x34C605B4u; // ori a2,a2,0x05B4 (delay slot; constant 0x001005B4)
+    textWords[364] = 0x0C040008u; // jal 0x00100020
+    textWords[365] = 0x0200282Du; // daddu a1,s0,zero (delay slot at 0x001005B4)
+    textWords[366] = 0x03E00008u; // jr ra
+    textWords[367] = 0x27BD0010u; // addiu sp,sp,0x10 (delay slot)
+
     // A second initialized-data word deliberately points at 0x00100588, the
     // delay slot of the JALR above. Its following body can look callable to a
     // reachability probe, but splitting there would truncate the real owner.
@@ -1717,6 +1734,10 @@ void register_ps2_recompiler_tests()
                      "a singleton data pointer loaded and consumed by JALR should be discovered");
             t.IsFalse(hasStart(0x00100588u),
                       "a data pointer must not split a function at a control-transfer delay slot");
+            t.IsTrue(hasStart(0x001005A0u),
+                     "the owner of a JAL whose delay slot equals a materialized constant should be a function");
+            t.IsFalse(hasStart(0x001005B4u),
+                      "a materialized argument must not split a function at a JAL delay slot");
             t.IsFalse(hasStart(0x00100300u),
                       "an isolated data pointer or non-callback code materialization must not become a function");
 
