@@ -715,8 +715,19 @@ inline __m128i ps2_psubsw(__m128i a, __m128i b)
 #define PS2_PCEQB(a, b) _mm_cmpeq_epi8((__m128i)(a), (__m128i)(b))
 
 // Packed Absolute (PABS)
-#define PS2_PABSW(a) _mm_abs_epi32((__m128i)(a))
-#define PS2_PABSH(a) _mm_abs_epi16((__m128i)(a))
+// GOW-Port: PABSW/PABSH saturan el valor minimo (0x80000000 -> 0x7FFFFFFF, 0x8000 -> 0x7FFF) como el R5900 (PCSX2 MMI.cpp).
+inline __m128i ps2_pabsw(__m128i a)
+{
+    const __m128i r = _mm_abs_epi32(a);
+    return _mm_xor_si128(r, _mm_cmpeq_epi32(r, _mm_set1_epi32(static_cast<int>(0x80000000u))));
+}
+inline __m128i ps2_pabsh(__m128i a)
+{
+    const __m128i r = _mm_abs_epi16(a);
+    return _mm_xor_si128(r, _mm_cmpeq_epi16(r, _mm_set1_epi16(static_cast<short>(0x8000u))));
+}
+#define PS2_PABSW(a) ps2_pabsw((__m128i)(a))
+#define PS2_PABSH(a) ps2_pabsh((__m128i)(a))
 #define PS2_PABSB(a) _mm_abs_epi8((__m128i)(a))
 
 // Packed Pack (PPAC) - Packs larger elements into smaller ones
@@ -766,16 +777,39 @@ inline __m128i ps2_ppacb(__m128i rs, __m128i rt)
 #define PS2_PPACB(a, b) ps2_ppacb((__m128i)(a), (__m128i)(b))
 
 // Packed Interleave (PINT)
-#define PS2_PINTH(a, b) _mm_unpacklo_epi16(_mm_shuffle_epi32((__m128i)(b), _MM_SHUFFLE(3, 2, 1, 0)), _mm_shuffle_epi32((__m128i)(a), _MM_SHUFFLE(3, 2, 1, 0)))
-#define PS2_PINTEH(a, b) _mm_unpackhi_epi16(_mm_shuffle_epi32((__m128i)(b), _MM_SHUFFLE(3, 2, 1, 0)), _mm_shuffle_epi32((__m128i)(a), _MM_SHUFFLE(3, 2, 1, 0)))
+// GOW-Port: PINTH intercala la mitad baja de rt con la ALTA de rs; PINTEH intercala las medias palabras pares de rt y rs
+// (a = rs, b = rt; PCSX2 MMI.cpp).
+#define PS2_PINTH(a, b) _mm_unpacklo_epi16((__m128i)(b), _mm_srli_si128((__m128i)(a), 8))
+#define PS2_PINTEH(a, b) _mm_or_si128(_mm_and_si128((__m128i)(b), _mm_set1_epi32(0x0000FFFF)), _mm_slli_epi32((__m128i)(a), 16))
 
 // Packed Multiply-Add (PMADD)
 #define PS2_PMADDW(a, b) _mm_add_epi32(_mm_mullo_epi32(_mm_shuffle_epi32((__m128i)(a), _MM_SHUFFLE(1, 0, 3, 2)), _mm_shuffle_epi32((__m128i)(b), _MM_SHUFFLE(1, 0, 3, 2))), _mm_mullo_epi32(_mm_shuffle_epi32((__m128i)(a), _MM_SHUFFLE(3, 2, 1, 0)), _mm_shuffle_epi32((__m128i)(b), _MM_SHUFFLE(3, 2, 1, 0))))
 
 // Packed Variable Shifts
-#define PS2_PSLLVW(a, b) _mm_custom_sllv_epi32((__m128i)(a), (__m128i)(b))
-#define PS2_PSRLVW(a, b) _mm_custom_srlv_epi32((__m128i)(a), (__m128i)(b))
-#define PS2_PSRAVW(a, b) _mm_custom_srav_epi32((__m128i)(a), (__m128i)(b))
+// GOW-Port: PSLLVW/PSRLVW/PSRAVW desplazan rt (palabras 0 y 2) por rs y extienden el signo del resultado de 32 bits
+// a 64 (a = rs, b = rt; PCSX2 MMI.cpp). Antes se desplazaba rs y se usaban las cuatro palabras.
+inline __m128i ps2_pshiftvw(__m128i rs, __m128i rt, int kind)
+{
+    alignas(16) uint32_t s[4], t[4];
+    alignas(16) int64_t d[2];
+    _mm_store_si128(reinterpret_cast<__m128i *>(s), rs);
+    _mm_store_si128(reinterpret_cast<__m128i *>(t), rt);
+    for (int i = 0; i < 2; ++i)
+    {
+        const uint32_t value = t[i * 2];
+        const uint32_t amount = s[i * 2] & 31u;
+        if (kind == 0)
+            d[i] = static_cast<int32_t>(value << amount);
+        else if (kind == 1)
+            d[i] = static_cast<int32_t>(value >> amount);
+        else
+            d[i] = static_cast<int32_t>(value) >> amount;
+    }
+    return _mm_load_si128(reinterpret_cast<const __m128i *>(d));
+}
+#define PS2_PSLLVW(a, b) ps2_pshiftvw((__m128i)(a), (__m128i)(b), 0)
+#define PS2_PSRLVW(a, b) ps2_pshiftvw((__m128i)(a), (__m128i)(b), 1)
+#define PS2_PSRAVW(a, b) ps2_pshiftvw((__m128i)(a), (__m128i)(b), 2)
 
 inline __m128i _mm_custom_sllv_epi32(__m128i a, __m128i count)
 {
@@ -955,9 +989,15 @@ inline __m128i ps2_qfsrv(__m128i rs, __m128i rt, uint32_t sa)
 }
 #define PS2_QFSRV(rs, rt, sa) ps2_qfsrv((__m128i)(rs), (__m128i)(rt), (uint32_t)(sa))
 #define PS2_PCPYLD(rs, rt) _mm_unpacklo_epi64(rt, rs)
-#define PS2_PEXEH(rs) _mm_shufflelo_epi16(_mm_shufflehi_epi16(rs, _MM_SHUFFLE(2, 3, 0, 1)), _MM_SHUFFLE(2, 3, 0, 1))
-#define PS2_PEXEW(rs) _mm_shuffle_epi32(rs, _MM_SHUFFLE(2, 3, 0, 1))
-#define PS2_PROT3W(rs) _mm_shuffle_epi32(rs, _MM_SHUFFLE(0, 3, 2, 1))
+// GOW-Port: permutaciones del R5900 (PCSX2 MMI.cpp), de palabra baja a alta:
+// PEXEH [2,1,0,3 | 6,5,4,7], PREVH [3,2,1,0 | 7,6,5,4], PEXCH [0,2,1,3 | 4,6,5,7] (medias palabras),
+// PEXEW [2,1,0,3], PROT3W [1,2,0,3], PEXCW [0,2,1,3] (palabras).
+#define PS2_PEXEH(rt) _mm_shufflelo_epi16(_mm_shufflehi_epi16((rt), _MM_SHUFFLE(3, 0, 1, 2)), _MM_SHUFFLE(3, 0, 1, 2))
+#define PS2_PREVH(rt) _mm_shufflelo_epi16(_mm_shufflehi_epi16((rt), _MM_SHUFFLE(0, 1, 2, 3)), _MM_SHUFFLE(0, 1, 2, 3))
+#define PS2_PEXCH(rt) _mm_shufflelo_epi16(_mm_shufflehi_epi16((rt), _MM_SHUFFLE(3, 1, 2, 0)), _MM_SHUFFLE(3, 1, 2, 0))
+#define PS2_PEXEW(rt) _mm_shuffle_epi32((rt), _MM_SHUFFLE(3, 0, 1, 2))
+#define PS2_PROT3W(rt) _mm_shuffle_epi32((rt), _MM_SHUFFLE(3, 0, 2, 1))
+#define PS2_PEXCW(rt) _mm_shuffle_epi32((rt), _MM_SHUFFLE(3, 1, 2, 0))
 
 // Additional VU0 operations
 #define PS2_VSQRT(x) sqrtf(x)
