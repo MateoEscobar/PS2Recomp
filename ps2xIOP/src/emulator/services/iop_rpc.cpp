@@ -167,7 +167,7 @@ namespace ps2x::iop::detail
             }
 
             uint32_t serverHandle = 0u;
-            if (m_host.hasGuestRpcServer(sid))
+            if (m_host.hasGuestRpcServer(sid) || m_host.awaitGuestRpcServer(sid))
             {
                 // Non-zero opaque handle: the SDK's bind loop spins on cd->server != NULL.
                 serverHandle = 0x80000000u | (m_nextEeServerHandle++ & 0x7FFFFFFFu);

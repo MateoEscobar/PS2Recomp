@@ -129,6 +129,17 @@ namespace ps2x::iop
             (void)sid;
             return false;
         }
+        // Called by sceSifBindRpc when the EE has not registered `sid` yet. On hardware the IRX's
+        // bind loop spins while the EE keeps running -- typically the EE thread that issued the
+        // RPC being served is blocked in sceSifCallRpc and another EE thread is about to register
+        // the server. A host that runs the IOP synchronously inside an EE call must let the other
+        // EE threads run here (or the bind can never succeed). Returns hasGuestRpcServer(sid)
+        // after doing so; the default does nothing and reports the server as still missing.
+        virtual bool awaitGuestRpcServer(uint32_t sid)
+        {
+            (void)sid;
+            return false;
+        }
         virtual bool callGuestRpc(uint32_t sid,
                                   uint32_t function,
                                   const void *send,

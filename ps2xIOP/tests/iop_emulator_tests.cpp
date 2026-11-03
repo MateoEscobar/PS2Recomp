@@ -78,6 +78,15 @@ namespace
         {
             return std::find(eeServers.begin(), eeServers.end(), sid) != eeServers.end();
         }
+        // Models an EE thread that registers the server only once the EE caller blocked in
+        // sceSifCallRpc lets it run (the host hands off when the IOP polls for the server).
+        bool awaitGuestRpcServer(uint32_t sid) override
+        {
+            ++eeServerAwaits;
+            if (sid == lateEeServer)
+                eeServers.push_back(sid);
+            return hasGuestRpcServer(sid);
+        }
         bool callGuestRpc(uint32_t sid, uint32_t function, const void *send, uint32_t sendSize,
                           void *receive, uint32_t receiveSize, uint32_t *result) override
         {
@@ -102,6 +111,8 @@ namespace
         std::string cdRoot;
         std::vector<uint32_t> eeServers;
         int eeRpcCalls = 0;
+        int eeServerAwaits = 0;
+        uint32_t lateEeServer = 0u;
         uint32_t lastEeRpcSid = 0u;
         uint32_t lastEeRpcFunction = 0u;
         uint32_t lastEeRpcSendSize = 0u;
@@ -1344,6 +1355,25 @@ int main()
                 "sceSifCallRpc did not deliver sid/function/send buffer to the host")) return 1;
     if (!expect(eeRpcReply == 0x600DF00Du,
                 "sceSifCallRpc did not copy the EE reply into the IOP receive buffer")) return 1;
+    host.eeServers.clear();
+
+    // The EE server is registered only while the IOP waits in sceSifBindRpc (TWR-27: The
+    // Warriors' MultiStream binds 0x12344321 from an RPC handler before the EE's sound thread
+    // registers it). The bind must hand off to the host and then see the server.
+    iop.reset();
+    host.eeRpcCalls = 0;
+    host.eeServerAwaits = 0;
+    host.lateEeServer = 0xEE11u;
+    writeEeRpcClientIrx(host, 0x100u);
+    const ModuleLoadResult lateClient = iop.loadModuleBuffer(0x100u);
+    uint32_t lateServerHandle = 0u;
+    if (!expect(iop.readMemory(0x00010424u, &lateServerHandle, sizeof(lateServerHandle)),
+                "Could not read the IOP client descriptor")) return 1;
+    if (!expect(host.eeServerAwaits == 1 && lateServerHandle != 0u,
+                "sceSifBindRpc did not wait for a late EE server through the host")) return 1;
+    if (!expect(lateClient.handled && lateClient.startResult == 0 && host.eeRpcCalls == 1,
+                "sceSifCallRpc to a late-registered EE server did not succeed")) return 1;
+    host.lateEeServer = 0u;
     host.eeServers.clear();
 
     // --- stdio printf argument formatting ---
