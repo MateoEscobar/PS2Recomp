@@ -1135,6 +1135,32 @@ int main()
     if (!expect(iop.debugSnapshot().emulatorInstructions > soundInstructionsBefore,
                 "Sound RPC did not execute the physical IOP handler")) return 1;
 
+    // A legitimate RPC handler can run for millions of instructions: MultiStream's
+    // SFX registration scans its 512-entry SpotFX table once per sound (O(n^2)) and
+    // took > 2M instructions in The Warriors. The call must run to completion; cutting
+    // it short leaves the IRX half-updated and the EE waiting forever.
+    const uint32_t longSoundHandler[] = {
+        0x3C08002Du, // lui   t0, 0x2d
+        0x3508C6C0u, // ori   t0, t0, 0xc6c0   (3 000 000 iterations, ~9M instructions)
+        0x2508FFFFu, // addiu t0, t0, -1
+        0x1500FFFEu, // bne   t0, zero, -2
+        0x00000000u, // nop
+        0x3C020001u, // lui   v0, 1
+        0x34420400u, // ori   v0, v0, 0x400 (registered server buffer)
+        0x3C09600Du, // lui   t1, 0x600d
+        0x3529F00Du, // ori   t1, t1, 0xf00d
+        0xAC490000u, // sw    t1, 0(v0)      (completion marker)
+        0x03E00008u, // jr    ra
+        0x00000000u, // nop
+    };
+    if (!expect(iop.writeMemory(0x00010300u, longSoundHandler, sizeof(longSoundHandler)),
+                "Could not install the long sound RPC handler")) return 1;
+    const RpcResult longSoundResult = iop.handleRpc(soundRequest);
+    uint32_t longSoundResponse = 0u;
+    std::memcpy(&longSoundResponse, host.guest.data() + 0x900u, sizeof(longSoundResponse));
+    if (!expect(longSoundResult.handled && longSoundResponse == 0x600DF00Du,
+                "A long RPC handler was cut short before it finished")) return 1;
+
     constexpr uint32_t relocatableRpcSid = 0xA11CE001u;
     writeRelocatableRpcServerIrx(host, 0x100u);
     const ModuleLoadResult relocatableRpcModule = iop.loadModuleBuffer(0x100u);

@@ -455,7 +455,18 @@ namespace ps2x::iop::detail
                 cpu.gpr[29] = kCallStackBase - 32u;
             }
             cpu.gpr[31] = kCallReturnSentinel;
-            runCpu(cpu, budget);
+            const uint32_t executed = runCpu(cpu, budget);
+            if (!cpu.stopped && !cpu.yielded && executed >= budget)
+            {
+                // Never cut a guest call silently: the caller sees a normal return
+                // while the IRX is left half-way through its work.
+                std::ostringstream out;
+                out << "[IOP] guest call 0x" << std::hex << address
+                    << " cut after " << std::dec << executed
+                    << " instructions at pc=0x" << std::hex << cpu.pc
+                    << " ra=0x" << cpu.gpr[31] << " depth=" << std::dec << depth;
+                log(LogLevel::Error, out.str());
+            }
             return cpu.gpr[2];
         }
 
