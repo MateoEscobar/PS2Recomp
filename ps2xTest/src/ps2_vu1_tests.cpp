@@ -771,9 +771,10 @@ void register_ps2_vu1_tests()
             Vu1Fixture fx;
             t.IsTrue(fx.initialize(), "VU1 fixture should initialize");
 
+            // TWR-27: EATAN is funct 0x7FD -> key 0x7D (0x7C is ESIN), as the decoder of the Waffle565 base.
             writeVuInstructionPair(
                 fx.code, 0u,
-                makeVuLowerSpecial(0x7Cu, 1u),
+                makeVuLowerSpecial(0x7Du, 1u),
                 kVuUpperNop); // EATAN P, vf1.x
             writeVuInstructionPair(
                 fx.code, 8u,
@@ -834,9 +835,11 @@ void register_ps2_vu1_tests()
             };
             constexpr EfuCase cases[] = {
                 {0x70u, 11u}, {0x71u, 18u}, {0x72u, 18u}, {0x73u, 24u},
-                {0x74u, 54u}, {0x75u, 54u}, {0x76u, 12u}, {0x77u, 18u},
-                {0x78u, 12u}, {0x79u, 29u}, {0x7Au, 12u}, {0x7Cu, 54u},
-                {0x7Du, 44u}};
+                // TWR-27: keys as PCSX2 encodes them (bits 6-10 << 2 | bits 0-1): ERSQRT 0x7BD -> 0x79,
+                // ESIN 0x7FC -> 0x7C, EATAN 0x7FD -> 0x7D, EEXP 0x7FE -> 0x7E; 0x77 is reserved.
+                {0x74u, 54u}, {0x75u, 54u}, {0x76u, 12u}, {0x78u, 12u},
+                {0x79u, 18u}, {0x7Au, 12u}, {0x7Cu, 29u}, {0x7Du, 54u},
+                {0x7Eu, 44u}};
 
             for (const EfuCase &efu : cases)
             {

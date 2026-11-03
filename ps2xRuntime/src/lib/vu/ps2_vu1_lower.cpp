@@ -8,6 +8,15 @@
 #include <cstring>
 #include <limits>
 
+// GOW-Port: la aritmética de VU no depende de /fp:fast. El runtime se compila con /fp:fast, que deja al
+// compilador fusionar a*b+c en FMA según dónde esté el código: el intérprete y el microcódigo compilado
+// (o dos versiones del intérprete) podían dar resultados distintos. Aquí cada operación se redondea por
+// separado, como en las FMAC de la PS2 (y en PCSX2).
+#if defined(_MSC_VER)
+#pragma float_control(precise, on, push)
+#pragma fp_contract(off)
+#endif
+
 namespace
 {
     float vuEatan(float value)
@@ -70,8 +79,10 @@ namespace
 // ============================================================================
 // Lower instructions
 // ============================================================================
+unsigned long long g_vuLowerHist[128]; // GOW-Port: GOW_VU1_STATS op histogram of the generic path
 void VU1Interpreter::execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSize, GS &gs, PS2Memory *memory, uint32_t upperInstr)
 {
+    ++g_vuLowerHist[(instr >> 25) & 0x7Fu];
     (void)upperInstr;
     if (instr == 0x00000000 || instr == 0x8000033C) // NOP
         return;
@@ -176,6 +187,7 @@ void VU1Interpreter::execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSiz
     }
     case 0x10: // FCEQ
     {
+        commitReadyFlags(); // GOW-Port: flags listos en este ciclo
         uint32_t imm24 = instr & 0xFFFFFF;
         if (1 != 0)
             m_state.vi[1] = ((m_state.clip & 0xFFFFFF) == imm24) ? 1 : 0;
@@ -188,6 +200,7 @@ void VU1Interpreter::execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSiz
     }
     case 0x12: // FCAND
     {
+        commitReadyFlags(); // GOW-Port: flags listos en este ciclo
         uint32_t imm24 = instr & 0xFFFFFF;
         if (1 != 0)
             m_state.vi[1] = ((m_state.clip & imm24) != 0) ? 1 : 0;
@@ -195,6 +208,7 @@ void VU1Interpreter::execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSiz
     }
     case 0x13: // FCOR
     {
+        commitReadyFlags(); // GOW-Port: flags listos en este ciclo
         uint32_t imm24 = instr & 0xFFFFFF;
         if (1 != 0)
             m_state.vi[1] = ((m_state.clip | imm24) == 0xFFFFFF) ? 1 : 0;
@@ -202,6 +216,7 @@ void VU1Interpreter::execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSiz
     }
     case 0x14: // FSEQ
     {
+        commitReadyFlags(); // GOW-Port: flags listos en este ciclo
         const uint8_t it = VIT(instr);
         const uint16_t imm12 = static_cast<uint16_t>((((instr >> 21) & 0x1u) << 11) | (instr & 0x7FFu));
         if (it != 0)
@@ -216,6 +231,7 @@ void VU1Interpreter::execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSiz
     }
     case 0x16: // FSAND
     {
+        commitReadyFlags(); // GOW-Port: flags listos en este ciclo
         const uint8_t it = VIT(instr);
         const uint16_t imm12 = static_cast<uint16_t>((((instr >> 21) & 0x1u) << 11) | (instr & 0x7FFu));
         if (it != 0)
@@ -224,6 +240,7 @@ void VU1Interpreter::execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSiz
     }
     case 0x17: // FSOR
     {
+        commitReadyFlags(); // GOW-Port: flags listos en este ciclo
         const uint8_t it = VIT(instr);
         const uint16_t imm12 = static_cast<uint16_t>((((instr >> 21) & 0x1u) << 11) | (instr & 0x7FFu));
         if (it != 0)
@@ -232,6 +249,7 @@ void VU1Interpreter::execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSiz
     }
     case 0x18: // FMEQ
     {
+        commitReadyFlags(); // GOW-Port: flags listos en este ciclo
         uint8_t it = VIT(instr);
         uint8_t is = VIS(instr);
         if (it != 0)
@@ -240,14 +258,26 @@ void VU1Interpreter::execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSiz
     }
     case 0x1A: // FMAND
     {
+        commitReadyFlags(); // GOW-Port: flags listos en este ciclo
         uint8_t it = VIT(instr);
         uint8_t is = VIS(instr);
         if (it != 0)
             m_state.vi[it] = (int32_t)(m_state.mac & (uint32_t)(uint16_t)m_state.vi[is]);
+        // GOW_VU1_FMANDPC=<hex pc>: debug, print the MAC flag FMAND reads at that pc (A/B with PCSX2's interpreter)
+        static const long fmandPc = std::getenv("GOW_VU1_FMANDPC") ? std::strtol(std::getenv("GOW_VU1_FMANDPC"), nullptr, 16) : -1;
+        static int fmandShown = 0;
+        if ((fmandPc == 0xFFFF || (fmandPc >= 0 && (static_cast<long>(m_state.pc) == fmandPc || static_cast<long>(m_state.pc) == fmandPc + 8))) && fmandShown < 40)
+        {
+            ++fmandShown;
+            std::fprintf(stderr, "[vu1-fmand] pc=%x mac=%04x mask=%04x -> %04x cycle=%llu\n", m_state.pc, m_state.mac & 0xFFFFu,
+                         static_cast<unsigned>(static_cast<uint16_t>(m_state.vi[is])), static_cast<unsigned>(static_cast<uint16_t>(m_state.vi[it])),
+                         static_cast<unsigned long long>(m_cycle));
+        }
         return;
     }
     case 0x1B: // FMOR
     {
+        commitReadyFlags(); // GOW-Port: flags listos en este ciclo
         uint8_t it = VIT(instr);
         uint8_t is = VIS(instr);
         if (it != 0)
@@ -256,6 +286,7 @@ void VU1Interpreter::execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSiz
     }
     case 0x1C: // FCGET
     {
+        commitReadyFlags(); // GOW-Port: flags listos en este ciclo
         const uint8_t it = VIT(instr);
         if (it != 0)
             m_state.vi[it] = static_cast<int32_t>(m_state.clip & 0x0FFFu);
@@ -728,7 +759,9 @@ void VU1Interpreter::execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSiz
                 queueP(sum, 12u);
                 return;
             }
-            case 0x77: // ERSQRT
+            // GOW-Port: códigos EFU del LowerOP de PCSX2
+            // 32ac6e23e4aaf8c8c5e74a6c1ed750ee7672120e; 0x77 es reservado.
+            case 0x79: // ERSQRT
             {
                 const uint32_t component = (instr >> 21) & 3u;
                 const float value = normalizeOperand(m_state.vf[vfS][component]);
@@ -749,7 +782,7 @@ void VU1Interpreter::execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSiz
                 queueP(value >= 0.0f ? std::sqrt(value) : value, 12u);
                 return;
             }
-            case 0x79: // ESIN
+            case 0x7C: // ESIN
             {
                 const uint32_t component = (instr >> 21) & 3u;
                 const float value = normalizeOperand(m_state.vf[vfS][component]);
@@ -765,13 +798,13 @@ void VU1Interpreter::execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSiz
             }
             case 0x7B: // WAITP
                 return;
-            case 0x7C: // EATAN
+            case 0x7D: // EATAN
             {
                 const uint32_t component = (instr >> 21) & 3u;
                 queueP(vuEatan(normalizeOperand(m_state.vf[vfS][component])), 54u);
                 return;
             }
-            case 0x7D: // EEXP
+            case 0x7E: // EEXP
             {
                 const uint32_t component = (instr >> 21) & 3u;
                 queueP(vuEexp(normalizeOperand(m_state.vf[vfS][component])), 44u);

@@ -282,6 +282,12 @@ public:
     uint64_t vifWriteCount() const { return m_vifWriteCount.load(std::memory_order_relaxed); }
     uint64_t getVU0CodeGeneration() const { return m_vu0CodeGeneration.load(std::memory_order_relaxed); }
     uint64_t getVU1CodeGeneration() const { return m_vu1CodeGeneration.load(std::memory_order_relaxed); }
+    // TWR-27: the native VU1 dispatcher (ps2_vu1_native.inl, god-of-war-recomp vu1-invalidacion-rango) asks for the
+    // byte ranges written since a generation. This runtime does not log them: returning false makes the dispatcher drop
+    // every block on a code change, the behaviour before range invalidation. (TW-Recomp logs them in its own runtime.)
+    struct Vu1CodeWrite { uint64_t generation; uint32_t lo, hi; };
+    static constexpr size_t kVu1CodeLog = 64;
+    bool vu1CodeWritesSince(uint64_t, uint64_t, Vu1CodeWrite *, size_t &) const { return false; }
 
     // Read/write memory
     uint8_t read8(uint32_t address);
