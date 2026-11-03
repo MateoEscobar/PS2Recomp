@@ -249,6 +249,11 @@ namespace ps2x::iop
         return m_impl->emulator.isMemoryRange(address, size);
     }
 
+    size_t IopSubsystem::drainAudio(int16_t *stereo, size_t maxFrames, size_t maxLatencyFrames)
+    {
+        return m_impl->emulator.drainAudio(stereo, maxFrames, maxLatencyFrames);
+    }
+
     DebugSnapshot IopSubsystem::debugSnapshot() const
     {
         DebugSnapshot snapshot;

@@ -3,6 +3,8 @@
 #include "ps2x/iop/iop_host.h"
 #include "ps2x/iop/iop_types.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -42,6 +44,10 @@ namespace ps2x::iop
         [[nodiscard]] bool isMemoryRange(uint32_t address, size_t size) const;
 
         [[nodiscard]] DebugSnapshot debugSnapshot() const;
+
+        // Output of the emulated SPU2: interleaved stereo at 48 kHz. May be called from the host audio
+        // thread. When more than maxLatencyFrames have built up, the oldest frames are dropped.
+        size_t drainAudio(int16_t *stereo, size_t maxFrames, size_t maxLatencyFrames = SIZE_MAX);
 
     private:
         class Impl;

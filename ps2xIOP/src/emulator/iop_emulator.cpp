@@ -406,6 +406,10 @@ namespace ps2x::iop::detail
             {
                 if (!step(cpu))
                     break;
+                // Keep the SPU2 in step with guest code too, not only between timeslices: IRX code
+                // that polls voice registers (MultiStream reads NAX) can run inside a synchronous RPC
+                // handler (callFunction), where runCycles() is not on the stack.
+                serviceSpu2();
                 if (!servicingDmaInterrupts && !pendingDmaInterrupts.empty())
                     servicePendingDmaInterrupts();
                 if (!servicingGuestCallbacks && !pendingGuestCallbacks.empty())
@@ -523,6 +527,33 @@ namespace ps2x::iop::detail
             servicingDmaInterrupts = false;
         }
 
+        // The SPU2 produces one sample every 768 IOP cycles; its IRQ (IRQA reached) is IOP interrupt 9.
+        // Ported from god-of-war-recomp (see core/spu2.h).
+        void serviceSpu2()
+        {
+            // PS2X_SPU2_IRQ=0 disables delivering the IRQ (to compare whether the game behaves differently).
+            static const bool irqEnabled = []
+            {
+                const char *value = std::getenv("PS2X_SPU2_IRQ");
+                return value == nullptr || value[0] != '0';
+            }();
+            Spu2 &spu = memory.spu2();
+            spu.advanceTo(totalCycles);
+            if (!spu.takeInterrupt() || !irqEnabled || servicingSpu2Interrupt)
+                return;
+            servicingSpu2Interrupt = true;
+            try
+            {
+                (void)intrman.dispatchInterrupt(Spu2::IopInterrupt, *this);
+            }
+            catch (...)
+            {
+                servicingSpu2Interrupt = false;
+                throw;
+            }
+            servicingSpu2Interrupt = false;
+        }
+
         void servicePendingGuestCallbacks()
         {
             if (servicingGuestCallbacks || pendingGuestCallbacks.empty())
@@ -571,6 +602,7 @@ namespace ps2x::iop::detail
                 const uint64_t target = totalCycles + cycles;
                 while (totalCycles < target)
                 {
+                    serviceSpu2();
                     servicePendingDmaInterrupts();
                     servicePendingGuestCallbacks();
                     timrman.serviceDue(totalCycles, *this);
@@ -592,6 +624,7 @@ namespace ps2x::iop::detail
                     if (totalCycles == before)
                         ++totalCycles;
                 }
+                serviceSpu2(); // also catch up after idle cycles were skipped up to the target
             }
             catch (...)
             {
@@ -707,6 +740,7 @@ namespace ps2x::iop::detail
         IopLoadcore loadcore;
         std::map<int, Module> modules;
         std::map<int, uint64_t> pendingDmaInterrupts;
+        bool servicingSpu2Interrupt = false;
         std::multimap<uint64_t, ScheduledGuestCallback> pendingGuestCallbacks;
         uint32_t nextModuleId = 1;
         uint32_t moduleCursor = kModuleLoadBase;
@@ -811,6 +845,11 @@ namespace ps2x::iop::detail
             return false;
         const uint32_t physical = IopMemory::physicalAddress(address);
         return physical <= IopMemory::RamSize && size <= IopMemory::RamSize - physical;
+    }
+
+    size_t IopEmulator::drainAudio(int16_t *stereo, size_t maxFrames, size_t maxLatencyFrames)
+    {
+        return m_impl->memory.spu2().drainOutput(stereo, maxFrames, maxLatencyFrames);
     }
 
     uint64_t IopEmulator::cycles() const noexcept

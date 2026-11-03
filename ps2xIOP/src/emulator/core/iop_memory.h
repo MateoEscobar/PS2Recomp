@@ -8,6 +8,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "spu2.h"
+
 namespace ps2x::iop::detail
 {
     class IopMemory
@@ -74,6 +76,7 @@ namespace ps2x::iop::detail
 
         [[nodiscard]] std::optional<DmaStart> takeDmaStart() noexcept;
         [[nodiscard]] std::span<const uint8_t> ram() const noexcept { return m_ram; }
+        [[nodiscard]] Spu2 &spu2() noexcept { return m_spu2; }
 
         [[nodiscard]] static uint32_t physicalAddress(uint32_t address) noexcept;
 
@@ -92,5 +95,6 @@ namespace ps2x::iop::detail
         uint32_t m_interruptMask = 0;
         uint32_t m_interruptControl = 1;
         std::optional<DmaStart> m_dmaStart;
+        Spu2 m_spu2;
     };
 }
