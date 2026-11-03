@@ -338,11 +338,18 @@ void VU1Interpreter::normalizeFmacResult(float *result, uint8_t dest,
         {
         case Kind::Add: exact = vs[component] + right; break;
         case Kind::Sub: exact = vs[component] - right; break;
-        case Kind::Madd: exact = acc[component] + vs[component] * right; break;
-        case Kind::Msub: exact = acc[component] - vs[component] * right; break;
+        // TWR-27: producto redondeado como PCSX2 (fmacProductTerm).
+        case Kind::Madd:
+            exact = acc[component] + fmacProductTerm(static_cast<float>(vs[component]), static_cast<float>(right));
+            break;
+        case Kind::Msub:
+            exact = acc[component] - fmacProductTerm(static_cast<float>(vs[component]), static_cast<float>(right));
+            break;
         case Kind::Mul: exact = vs[component] * right; break;
         case Kind::Opmsub:
-            exact = component == 3u ? 0.0L : acc[component] - vs[crossLeft[component]] * vt[crossRight[component]];
+            exact = component == 3u ? 0.0L
+                                    : acc[component] - fmacProductTerm(static_cast<float>(vs[crossLeft[component]]),
+                                                                       static_cast<float>(vt[crossRight[component]]));
             break;
         case Kind::Opmula:
             exact = component == 3u ? 0.0L : vs[crossLeft[component]] * vt[crossRight[component]];

@@ -313,10 +313,10 @@ VU1_STEP_INLINE void VU1Interpreter::fmacLaneT(float &result, uint8_t &laneFlags
             exact = static_cast<long double>(vs) + static_cast<long double>(right);
         else if constexpr (info.kind == vu1c::Kind::Sub)
             exact = static_cast<long double>(vs) - static_cast<long double>(right);
-        else if constexpr (info.kind == vu1c::Kind::Madd)
-            exact = static_cast<long double>(acc) + static_cast<long double>(vs) * static_cast<long double>(right);
+        else if constexpr (info.kind == vu1c::Kind::Madd) // TWR-27: producto redondeado como PCSX2 (fmacProductTerm)
+            exact = static_cast<long double>(acc) + fmacProductTerm(vs, right);
         else if constexpr (info.kind == vu1c::Kind::Msub || info.kind == vu1c::Kind::Opmsub)
-            exact = static_cast<long double>(acc) - static_cast<long double>(vs) * static_cast<long double>(right);
+            exact = static_cast<long double>(acc) - fmacProductTerm(vs, right);
         else
             exact = static_cast<long double>(vs) * static_cast<long double>(right);
         laneFlags = normalizeFmacExactResult(result, exact);

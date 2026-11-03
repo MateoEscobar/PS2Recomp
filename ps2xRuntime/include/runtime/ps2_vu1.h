@@ -450,6 +450,24 @@ private:
         laneFlags = (r & 0x80000000u) != 0u ? 0x2u : 0u;
         return true;
     }
+    // TWR-27: término producto de MADD/MSUB/OPMSUB para los flags. Como PCSX2 (VUops.cpp _vuOpMADD/_vuOpMSUB:
+    // acc +/- float(fs * ft)) el producto se redondea a float (hacia cero, MXCSR de run()) y un producto
+    // subnormal se vacía a cero con signo (FTZ, como la VU1 nativa y PCSX2) antes de sumarlo a ACC. Antes se
+    // sumaba el producto sin redondear: con un triángulo degenerado (producto cruz MULA + MSUB que cancela
+    // exactamente en float) daba un residuo de 1e-7 con signo, S en vez de Z, y otro bit ADC que la nativa.
+    // Solo un producto que satura (|p| = FLT_MAX con redondeo hacia cero) se deja sin redondear: puede
+    // cancelar contra ACC, igual que vu1n::maddWide de la nativa.
+    static VU1_HOT_INLINE long double fmacProductTerm(float a, float b)
+    {
+        const float product = a * b;
+        uint32_t bits = 0u;
+        std::memcpy(&bits, &product, sizeof(bits));
+        if ((bits & 0x7FFFFFFFu) >= 0x7F7FFFFFu)
+            return static_cast<long double>(a) * static_cast<long double>(b);
+        if ((bits & 0x7F800000u) == 0u)
+            return (bits & 0x80000000u) != 0u ? -0.0L : 0.0L;
+        return static_cast<long double>(product);
+    }
     // GOW-Port: flags Z/S/U/O del producto exacto a*b (lo mismo que normalizeFmacExactResult sobre
     // a*b en long double). El producto de dos float cabe exacto en un double. Si el producto ya
     // redondeado es normal y lejos de los extremos (exponente 2..0xFD), el exacto no es cero, no desborda
