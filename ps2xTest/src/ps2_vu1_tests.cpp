@@ -765,6 +765,31 @@ void register_ps2_vu1_tests()
                       "RNEXT should advance the 23-bit R LFSR and write a 1.x value");
         });
 
+        tc.Run("EATAN evaluates the arctangent series used by PCSX2", [](TestCase &t)
+        {
+            // GOW-Port: EATAN suma pi/4 a la serie de atan(t); con t = 1 el resultado es pi/2.
+            Vu1Fixture fx;
+            t.IsTrue(fx.initialize(), "VU1 fixture should initialize");
+
+            writeVuInstructionPair(
+                fx.code, 0u,
+                makeVuLowerSpecial(0x7Cu, 1u),
+                kVuUpperNop); // EATAN P, vf1.x
+            writeVuInstructionPair(
+                fx.code, 8u,
+                makeVuLowerSpecial(0x7Bu, 0u),
+                kVuUpperNop); // WAITP
+
+            VU1Interpreter vu1;
+            vu1.state().vf[1][0] = 1.0f;
+            vu1.execute(fx.code, PS2_VU1_CODE_SIZE,
+                        fx.data, PS2_VU1_DATA_SIZE, fx.gs, &fx.mem,
+                        0u, 0u, 0u, 64u);
+
+            t.IsTrue(std::fabs(vu1.state().p - 1.5707964f) < 1e-5f,
+                     "EATAN(1) should be pi/2 with the PCSX2 coefficients");
+        });
+
         tc.Run("EFU resource observes throughput separately from P visibility", [](TestCase &t)
         {
             Vu1Fixture fx;
@@ -1053,41 +1078,50 @@ void register_ps2_vu1_tests()
                      "the flag-driven branch should arrive at its target");
         });
 
-        tc.Run("JR shares the one-instruction VI branch visibility rule", [](TestCase &t)
+        tc.Run("JR reads the current VI target after IADDIU", [](TestCase &t)
         {
             Vu1Fixture fx;
             t.IsTrue(fx.initialize(), "VU1 fixture should initialize");
-
-            writeVuInstructionPair(
-                fx.code, 0u, makeVuIaddiu(1u, 0u, 2),
-                kVuUpperNop);
-            writeVuInstructionPair(
-                fx.code, 8u, makeVuJr(1u),
-                kVuUpperNop);
-            writeVuInstructionPair(
-                fx.code, 16u, makeVuIaddiu(2u, 0u, 2),
-                kVuUpperNop);
-            writeVuInstructionPair(
-                fx.code, 24u, makeVuIaddiu(3u, 0u, 3),
-                kVuUpperNop);
-            writeVuInstructionPair(
-                fx.code, 32u, makeVuIaddiu(4u, 0u, 4),
-                kVuUpperNop);
-
+            writeVuInstructionPair(fx.code, 0u, makeVuIaddiu(1u, 0u, 4), kVuUpperNop);
+            writeVuInstructionPair(fx.code, 8u, makeVuJr(1u), kVuUpperNop);
+            writeVuInstructionPair(fx.code, 16u, makeVuIaddiu(2u, 0u, 2), kVuUpperNop);
+            writeVuInstructionPair(fx.code, 24u, makeVuIaddiu(3u, 0u, 3), kVuUpperNop);
+            writeVuInstructionPair(fx.code, 32u, makeVuIaddiu(4u, 0u, 4), kVuUpperNop);
+            writeVuInstructionPair(fx.code, 40u, makeVuIaddiu(5u, 0u, 5), kVuUpperNop);
             VU1Interpreter vu1;
-            vu1.state().vi[1] = 4;
-            vu1.execute(fx.code, PS2_VU1_CODE_SIZE,
-                        fx.data, PS2_VU1_DATA_SIZE, fx.gs, &fx.mem,
-                        0u, 0u, 0u, 4u);
+            vu1.state().vi[1] = 5;
+            vu1.execute(fx.code, PS2_VU1_CODE_SIZE, fx.data, PS2_VU1_DATA_SIZE,
+                        fx.gs, &fx.mem, 0u, 0u, 0u, 4u);
+            t.Equals(vu1.state().vi[1], 4, "IADDIU should commit normally");
+            t.Equals(vu1.state().vi[2], 2, "JR should execute its delay slot");
+            t.Equals(vu1.state().vi[3], 0, "JR should skip the sequential pair");
+            t.Equals(vu1.state().vi[4], 4, "JR should use the current target");
+            t.Equals(vu1.state().vi[5], 0, "JR should not use the previous target");
+        });
 
-            t.Equals(vu1.state().vi[1], 2,
-                     "the pending IALU write should still commit normally");
-            t.Equals(vu1.state().vi[2], 2,
-                     "JR should execute exactly one delay-slot pair");
-            t.Equals(vu1.state().vi[3], 0,
-                     "JR should skip the sequential instruction after its delay slot");
-            t.Equals(vu1.state().vi[4], 4,
-                     "JR immediately after a VI write should branch using the previous VI value");
+        tc.Run("JALR reads the current VI target before writing its link", [](TestCase &t)
+        {
+            for (const uint8_t link : {uint8_t{15}, uint8_t{1}})
+            {
+                Vu1Fixture fx;
+                t.IsTrue(fx.initialize(), "VU1 fixture should initialize");
+                writeVuInstructionPair(fx.code, 0u, makeVuIaddiu(1u, 0u, 4), kVuUpperNop);
+                const uint32_t jalr = (0x25u << 25) | (uint32_t{link} << 16) | (1u << 11);
+                writeVuInstructionPair(fx.code, 8u, jalr, kVuUpperNop);
+                writeVuInstructionPair(fx.code, 16u, makeVuIaddiu(2u, 0u, 2), kVuUpperNop);
+                writeVuInstructionPair(fx.code, 24u, makeVuIaddiu(3u, 0u, 3), kVuUpperNop);
+                writeVuInstructionPair(fx.code, 32u, makeVuIaddiu(4u, 0u, 4), kVuUpperNop);
+                writeVuInstructionPair(fx.code, 40u, makeVuIaddiu(5u, 0u, 5), kVuUpperNop);
+                VU1Interpreter vu1;
+                vu1.state().vi[1] = 5;
+                vu1.execute(fx.code, PS2_VU1_CODE_SIZE, fx.data, PS2_VU1_DATA_SIZE,
+                            fx.gs, &fx.mem, 0u, 0u, 0u, 4u);
+                t.Equals(vu1.state().vi[link], 3, "JALR should link after the delay slot");
+                t.Equals(vu1.state().vi[2], 2, "JALR should execute its delay slot");
+                t.Equals(vu1.state().vi[3], 0, "JALR should skip the sequential pair");
+                t.Equals(vu1.state().vi[4], 4, "JALR should use the current target");
+                t.Equals(vu1.state().vi[5], 0, "JALR should not use the previous target");
+            }
         });
 
         tc.Run("MPG upload invalidates cached VU1 decode before MSCAL", [](TestCase &t)

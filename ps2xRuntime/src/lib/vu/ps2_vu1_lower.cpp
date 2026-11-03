@@ -16,7 +16,8 @@ namespace
             0.999999344348907f,
             -0.333298563957214f,
             0.199465364217758f,
-            -0.13085337519646f,
+            // GOW-Port: el coeficiente de t^7 es -0.139085..., como en PCSX2 (antes -0.130853..., una errata).
+            -0.139085337519646f,
             0.096420042216778f,
             -0.055909886956215f,
             0.021861229091883f,
@@ -284,7 +285,9 @@ void VU1Interpreter::execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSiz
     case 0x24: // JR
     {
         uint8_t is = VIS(instr);
-        uint32_t target = ((uint32_t)(uint16_t)readBranchVi(is) * 8u) & pcMask;
+        // GOW-Port: JR/JALR leen el VI actual; el valor retrasado se usa
+        // solo en las comparaciones de ramas condicionales.
+        uint32_t target = ((uint32_t)(uint16_t)m_state.vi[is] * 8u) & pcMask;
         m_state.branchPending = true;
         m_state.branchTarget = target;
         m_state.branchDelay = 1;
@@ -294,7 +297,9 @@ void VU1Interpreter::execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSiz
     {
         uint8_t it = VIT(instr);
         uint8_t is = VIS(instr);
-        uint32_t target = ((uint32_t)(uint16_t)readBranchVi(is) * 8u) & pcMask;
+        // GOW-Port: JR/JALR leen el VI actual; el valor retrasado se usa
+        // solo en las comparaciones de ramas condicionales.
+        uint32_t target = ((uint32_t)(uint16_t)m_state.vi[is] * 8u) & pcMask;
         if (it != 0)
             m_state.vi[it] = (int32_t)((m_state.pc + 16) / 8);
         m_state.branchPending = true;
